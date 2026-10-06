@@ -1,0 +1,116 @@
+// ---------------------------------------------------------------------------
+// Claims Intelligence Engine — data model
+//
+// Two aggregates, as the brief asks:
+//   Claim       — a marketing/efficacy claim proposed for a product, moving
+//                 through the business workflow (business -> claim manager ->
+//                 scientist -> evaluator).
+//   Assessment  — one immutable, auditable AI judgement of whether a given
+//                 piece of evidence substantiates that claim.
+//
+// A Claim has MANY Assessments: evidence gets re-submitted, prompts and
+// models change, and regulators/auditors need the full history, so we never
+// overwrite a verdict — we append a new one.
+// ---------------------------------------------------------------------------
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "cjs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Where a claim sits in the business flow described in the brief.
+enum ClaimStatus {
+  PROPOSED            // Business team proposed the claim
+  SCREENED            // Claim manager: applicable & feasible
+  REJECTED            // Claim manager: filtered out
+  FORMULATED          // Scientist submitted the formulation test
+  EVIDENCE_SUBMITTED  // Evaluator attached the clinical study / test report
+  ASSESSED            // AI assessment recorded (may still need human review)
+}
+
+/// Broad claim families — they drive which kind of evidence is acceptable
+/// (e.g. an EFFICACY claim needs instrumental data, a CONSUMER_PERCEPTION
+/// claim can rest on a self-assessment questionnaire).
+enum ClaimCategory {
+  EFFICACY
+  CONSUMER_PERCEPTION
+  SENSORY
+  COMPARATIVE
+  SAFETY
+  FREE_FROM
+  OTHER
+}
+
+/// Three states, not two: "the study doesn't say enough" is different from
+/// "the study contradicts the claim", and the workflow treats them differently.
+enum Verdict {
+  JUSTIFIED
+  NOT_JUSTIFIED
+  INSUFFICIENT_EVIDENCE
+}
+
+model Claim {
+  id          String        @id @default(uuid()) @db.Uuid
+  productName String        @db.VarChar(200)
+  claimText   String        @db.VarChar(500)
+  category    ClaimCategory @default(EFFICACY)
+  /// Target market drives the regulatory frame (EU 655/2013, US FTC, ...).
+  market      String        @default("EU") @db.VarChar(10)
+  status      ClaimStatus   @default(PROPOSED)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  assessments Assessment[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Assessment {
+  id      String @id @default(uuid()) @db.Uuid
+  claimId String @db.Uuid
+  claim   Claim  @relation(fields: [claimId], references: [id], onDelete: Cascade)
+
+  // ---- Input snapshot (what was judged) -----------------------------------
+  evidenceText String @db.Text
+  /// sha256(claim + evidence + promptVersion + model): idempotency / cache key.
+  inputHash    String @db.Char(64)
+
+  // ---- The judgement ------------------------------------------------------
+  verdict          Verdict
+  /// Denormalised from verdict for the UI's simple Yes/No and for reporting.
+  isJustified      Boolean
+  /// 0.0 – 1.0
+  confidenceScore  Float
+  reasoning        String   @db.Text
+  supportingPoints String[]
+  gaps             String[]
+  /// Per-criterion rubric (endpoint, magnitude, timepoint, design, stats, population).
+  criteria         Json
+
+  // ---- Governance ---------------------------------------------------------
+  /// Deterministic cross-checks that disagreed with the LLM.
+  guardrailFlags      String[]
+  /// True when confidence is low, evidence insufficient, or a guardrail fired.
+  requiresHumanReview Boolean  @default(false)
+
+  // ---- Provenance (reproducibility & cost tracking) ----------------------
+  provider         String  @db.VarChar(30)
+  model            String  @db.VarChar(100)
+  promptVersion    String  @db.VarChar(30)
+  latencyMs        Int
+  promptTokens     Int?
+  completionTokens Int?
+  rawResponse      Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([claimId, createdAt])
+  @@index([inputHash])
+  @@index([requiresHumanReview])
+}

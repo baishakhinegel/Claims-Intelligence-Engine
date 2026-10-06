@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: claims-engine-db
+    environment:
+      POSTGRES_USER: claims
+      POSTGRES_PASSWORD: claims
+      POSTGRES_DB: claims_engine
+    # Host port 5433 so it never collides with a Postgres already running on 5432
+    ports:
+      - "5433:5432"
+    volumes:
+      - claims_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U claims -d claims_engine"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  claims_pgdata:
